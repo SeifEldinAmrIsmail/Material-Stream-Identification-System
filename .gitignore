@@ -1,0 +1,17 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments (DO NOT push)
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS/editor stuff
+.DS_Store
+.vscode/
+.idea/
