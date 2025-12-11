@@ -1,72 +1,90 @@
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pandas as pd
+from PIL import Image, ImageFile
+
+import torch
+from torch import nn
+from torchvision import models, transforms
+
+# Allow PIL to load some truncated images
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def preprocess_image(img, size=(128, 128)):
-    """Resize image to a fixed size."""
-    return cv2.resize(img, size, interpolation=cv2.INTER_AREA)
+def load_model():
+    # Pretrained ResNet-18 on ImageNet
+    weights = models.ResNet18_Weights.IMAGENET1K_V1
+    model = models.resnet18(weights=weights)
+    # Replace final FC layer with identity to get 512-dim features
+    model.fc = nn.Identity()
+    model.eval()
+    model.to(DEVICE)
+    return model
 
 
-def extract_color_hist(img, bins=(8, 8, 8)):
+# Preprocessing expected by ResNet-18
+transform = transforms.Compose(
+    [
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        ),
+    ]
+)
+
+
+def safe_open_image(path):
     """
-    Simple handcrafted feature:
-    HSV color histogram with 8x8x8 bins = 512-dim vector.
+    Try to open image with Pillow.
+    Returns PIL.Image or None if completely unreadable.
     """
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
-    hist = cv2.calcHist(
-        [hsv],
-        [0, 1, 2],
-        None,
-        bins,
-        [0, 180, 0, 256, 0, 256],
-    )
-
-    cv2.normalize(hist, hist)
-    return hist.flatten()
-
-
-def extract_features_from_path(img_path):
-    """Load image from disk and return a 1D feature vector."""
-    img = cv2.imread(str(img_path))
-    if img is None:
-        print(f"[WARN] Could not read image for features: {img_path}")
+    try:
+        img = Image.open(path)
+        img = img.convert("RGB")
+        return img
+    except Exception as e:
+        print(f"[WARN] Could not read image: {path} ({e})")
         return None
 
-    img = preprocess_image(img)
-    feat = extract_color_hist(img)
-    return feat
 
-
-def build_feature_dataset(csv_path, output_prefix):
+def extract_features_for_csv(csv_path, output_prefix):
     """
-    Read a CSV with columns [path, label, class_name],
-    build feature matrix X and label vector y,
-    and save them as .npy files.
+    Read CSV [path, label], extract 512-dim ResNet features
+    for all *readable* images, and save X, y as .npy.
     """
     csv_path = Path(csv_path)
     df = pd.read_csv(csv_path)
 
-    features = []
-    labels = []
+    paths = df["path"].tolist()
+    labels = df["label"].tolist()
 
-    for _, row in df.iterrows():
-        img_path = row["path"]
-        label = row["label"]
+    model = load_model()
 
-        feat = extract_features_from_path(img_path)
-        if feat is None:
-            # skip unreadable images
+    feats_list = []
+    labels_list = []
+
+    for p, lbl in zip(paths, labels):
+        img = safe_open_image(p)
+        if img is None:
+            # skip corrupted image
             continue
 
-        features.append(feat)
-        labels.append(label)
+        x = transform(img).unsqueeze(0).to(DEVICE)  # shape (1, 3, 224, 224)
 
-    X = np.array(features, dtype=np.float32)
-    y = np.array(labels, dtype=np.int64)
+        with torch.no_grad():
+            feat = model(x)           # shape (1, 512)
+        feat = feat.cpu().numpy().squeeze()  # shape (512,)
+
+        feats_list.append(feat)
+        labels_list.append(int(lbl))
+
+    X = np.stack(feats_list, axis=0)
+    y = np.array(labels_list, dtype=np.int64)
 
     output_prefix = Path(output_prefix)
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -74,19 +92,21 @@ def build_feature_dataset(csv_path, output_prefix):
     np.save(str(output_prefix) + "_X.npy", X)
     np.save(str(output_prefix) + "_y.npy", y)
 
-    print(f"[INFO] Saved features to {output_prefix}_X.npy with shape {X.shape}")
-    print(f"[INFO] Saved labels   to {output_prefix}_y.npy with shape {y.shape}")
+    print(f"[INFO] From CSV: {csv_path}")
+    print(f"[INFO] Readable images: {X.shape[0]}")
+    print(f"[INFO] Saved CNN features to {output_prefix}_X.npy with shape {X.shape}")
+    print(f"[INFO] Saved labels       to {output_prefix}_y.npy with shape {y.shape}")
 
 
 if __name__ == "__main__":
-    # 1) Training set: use augmented CSV
-    build_feature_dataset(
+    # Training set: use augmented train
+    extract_features_for_csv(
         "data/processed/train_augmented.csv",
-        "data/processed/train",
+        "data/processed/train_cnn",
     )
 
-    # 2) Validation set: use original val split (no augmentation)
-    build_feature_dataset(
+    # Validation set: original val split (no augmentation)
+    extract_features_for_csv(
         "data/interim/val_split.csv",
-        "data/processed/val",
+        "data/processed/val_cnn",
     )

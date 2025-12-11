@@ -8,25 +8,47 @@ import pandas as pd
 
 def random_augment(image):
     """
-    Apply one simple random augmentation to an image.
+    Apply 1–2 random augmentations to an image.
+    Covers: flip, rotation, brightness, contrast, blur, zoom/crop.
     """
-    choice = random.choice(["flip", "rotate", "bright"])
+    h, w = image.shape[:2]
 
-    if choice == "flip":
-        # horizontal flip
-        image = cv2.flip(image, 1)
+    ops = ["flip", "rotate", "bright", "contrast", "blur", "zoom"]
+    # randomly choose to apply 1 or 2 operations
+    n_ops = random.choice([1, 2])
 
-    elif choice == "rotate":
-        angle = random.choice([-15, -10, -5, 5, 10, 15])
-        h, w = image.shape[:2]
-        M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
-        image = cv2.warpAffine(
-            image, M, (w, h), borderMode=cv2.BORDER_REFLECT_101
-        )
+    for op in random.sample(ops, n_ops):
+        if op == "flip":
+            # horizontal flip
+            image = cv2.flip(image, 1)
 
-    elif choice == "bright":
-        factor = random.uniform(0.7, 1.3)
-        image = np.clip(image * factor, 0, 255).astype(np.uint8)
+        elif op == "rotate":
+            angle = random.choice([-15, -10, -5, 5, 10, 15])
+            M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+            image = cv2.warpAffine(
+                image, M, (w, h), borderMode=cv2.BORDER_REFLECT_101
+            )
+
+        elif op == "bright":
+            factor = random.uniform(0.7, 1.3)
+            image = np.clip(image * factor, 0, 255).astype(np.uint8)
+
+        elif op == "contrast":
+            alpha = random.uniform(0.8, 1.4)  # contrast
+            beta = random.randint(-15, 15)    # brightness shift
+            image = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
+
+        elif op == "blur":
+            image = cv2.GaussianBlur(image, (3, 3), 0)
+
+        elif op == "zoom":
+            # random slight zoom + crop then resize back
+            zoom = random.uniform(0.9, 1.0)  # keep most of the image
+            new_h, new_w = int(h * zoom), int(w * zoom)
+            top = random.randint(0, h - new_h)
+            left = random.randint(0, w - new_w)
+            crop = image[top : top + new_h, left : left + new_w]
+            image = cv2.resize(crop, (w, h), interpolation=cv2.INTER_AREA)
 
     return image
 
@@ -34,7 +56,7 @@ def random_augment(image):
 def create_augmented_train(
     split_csv="data/interim/train_split.csv",
     output_root="data/processed/augmented_train",
-    target_per_class=600,
+    target_per_class=800,
 ):
     """
     Read the training split and create extra images to balance classes.
