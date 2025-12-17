@@ -1,7 +1,6 @@
 # src/models/train_knn.py
 
 from pathlib import Path
-
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import KNeighborsClassifier
