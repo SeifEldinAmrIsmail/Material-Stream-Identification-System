@@ -9,28 +9,30 @@ from torch import nn
 from torchvision import models, transforms
 
 
-# ===============================
-# 1) CNN FEATURE EXTRACTOR (ResNet-18)
-# ===============================
-
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+LABEL_TO_CLASS = {
+    0: "cardboard",
+    1: "glass",
+    2: "metal",
+    3: "paper",
+    4: "plastic",
+    5: "trash",
+    6: "unknown",
+}
+UNKNOWN_LABEL = 6
 
 
 def load_cnn_model():
-    """
-    Load pretrained ResNet-18 as a feature extractor (512-dim output).
-    نفس الإعدادات المستخدمة في feature_extractor.py
-    """
     weights = models.ResNet18_Weights.IMAGENET1K_V1
     model = models.resnet18(weights=weights)
-    model.fc = nn.Identity()  # remove final FC => 512-dim features
+    model.fc = nn.Identity()
     model.eval()
     model.to(DEVICE)
     return model
 
 
-# نفس الـ transform المستخدم في training
-CNN_TRANSFORM = transforms.Compose(
+transform = transforms.Compose(
     [
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -42,113 +44,68 @@ CNN_TRANSFORM = transforms.Compose(
 )
 
 
-def image_to_feature(cnn_model, frame_bgr):
-    """
-    يأخذ frame من الكاميرا (BGR من OpenCV)،
-    يحوله لـ 512-dim feature vector باستخدام ResNet-18.
-    """
-    # BGR -> RGB
-    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    pil_img = Image.fromarray(frame_rgb)
+def load_svm_bundle():
+    bundle_path = Path("models") / "svm_cnn_with_rejection.pkl"
+    bundle = joblib.load(bundle_path)
+    return bundle["model"], bundle["threshold"]
 
-    x = CNN_TRANSFORM(pil_img).unsqueeze(0).to(DEVICE)  # (1, 3, 224, 224)
 
+def frame_to_feature(frame, cnn_model):
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    img = Image.fromarray(rgb)
+    x = transform(img).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
-        feat = cnn_model(x)  # (1, 512)
-
-    return feat.cpu().numpy()  # (1, 512)
-
-
-# ===============================
-# 2) LOAD SVM MODEL WITH REJECTION
-# ===============================
-
-def load_svm_bundle(models_dir="models"):
-    """
-    Load the trained SVM model bundle saved by train_svm.py
-    (svm_cnn_with_rejection.pkl).
-    """
-    model_path = Path(models_dir) / "svm_cnn_with_rejection.pkl"
-    if not model_path.exists():
-        raise FileNotFoundError(
-            f"Could not find {model_path}. "
-            f"Make sure you ran src/models/train_svm.py first."
-        )
-
-    bundle = joblib.load(model_path)
-    svm_model = bundle["model"]
-    threshold = bundle["threshold"]
-    label_to_class = bundle["label_to_class"]
-    unknown_label = bundle["unknown_label"]
-    return svm_model, threshold, label_to_class, unknown_label
+        feat = cnn_model(x).cpu().numpy().squeeze()
+    return feat.reshape(1, -1)
 
 
-def svm_predict_frame(svm_model, threshold, feature, label_to_class, unknown_label):
-    """
-    اعمل prediction لــ frame واحد:
-    - input: feature شكلها (1, 512)
-    - output: label name + probability
-    """
-    proba = svm_model.predict_proba(feature)  # (1, 6)
-    max_p = float(proba.max(axis=1)[0])
-    pred_idx = int(proba.argmax(axis=1)[0])
+def predict_frame(frame, cnn_model, svm_model, threshold):
+    feat = frame_to_feature(frame, cnn_model)
+    proba = svm_model.predict_proba(feat)
+    max_proba = proba.max(axis=1)[0]
+    pred = proba.argmax(axis=1)[0]
 
-    # تطبيق الـ rejection rule
-    if max_p < threshold:
-        pred_label = unknown_label
+    if max_proba < threshold:
+        label_id = UNKNOWN_LABEL
     else:
-        pred_label = pred_idx
+        label_id = int(pred)
 
-    class_name = label_to_class.get(pred_label, "unknown")
-    return class_name, max_p, pred_label
+    label_name = LABEL_TO_CLASS.get(label_id, "unknown")
+    return label_name, float(max_proba)
 
-
-# ===============================
-# 3) LIVE CAMERA APP
-# ===============================
 
 def main():
-    print("[INFO] Loading CNN feature extractor (ResNet-18)...")
+    print("[INFO] Loading CNN feature extractor...")
     cnn_model = load_cnn_model()
 
-    print("[INFO] Loading SVM model with rejection...")
-    svm_model, threshold, label_to_class, unknown_label = load_svm_bundle()
-
+    print("[INFO] Loading SVM model...")
+    svm_model, threshold = load_svm_bundle()
     print(f"[INFO] Using SVM rejection threshold = {threshold:.2f}")
-    print("[INFO] Starting camera... (press 'q' to quit)")
 
-    cap = cv2.VideoCapture(0)  # لو عندك أكتر من كاميرا استخدم 1 أو 2 بدلاً من 0
+    cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("[ERROR] Cannot open camera.")
         return
 
+    print("[INFO] Press 'q' to quit.")
     while True:
         ret, frame = cap.read()
         if not ret:
-            print("[WARN] Failed to grab frame from camera.")
             break
 
-        # 1) Extract CNN feature
-        feature = image_to_feature(cnn_model, frame)  # (1, 512)
+        label, score = predict_frame(frame, cnn_model, svm_model, threshold)
 
-        # 2) SVM prediction + rejection
-        class_name, max_p, pred_label = svm_predict_frame(
-            svm_model, threshold, feature, label_to_class, unknown_label
-        )
+        text = f"{label} ({score:.2f})"
 
-        # 3) Prepare label text
-        if class_name == "unknown":
-            display_text = f"Unknown / Not confident ({max_p:.2f})"
-            color = (0, 0, 255)  # red
+        if label == "unknown":
+            color = (0, 0, 255)
         else:
-            display_text = f"{class_name} ({max_p:.2f})"
-            color = (0, 255, 0)  # green
+            color = (0, 255, 0)
 
-        # 4) Draw label on the frame
         cv2.putText(
             frame,
-            display_text,
-            (20, 40),
+            text,
+            (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             1.0,
             color,
@@ -156,16 +113,13 @@ def main():
             cv2.LINE_AA,
         )
 
-        # 5) Show frame
-        cv2.imshow("Material Stream Classifier (SVM + CNN)", frame)
-
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
+        cv2.imshow("Live Material Classifier (SVM)", frame)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
     cap.release()
     cv2.destroyAllWindows()
-    print("[INFO] Camera app closed.")
+
 
 
 if __name__ == "__main__":

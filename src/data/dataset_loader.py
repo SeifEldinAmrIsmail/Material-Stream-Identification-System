@@ -1,69 +1,61 @@
-from pathlib import Path
-from typing import List, Tuple, Dict
 from collections import Counter
+from pathlib import Path
+from typing import List, Tuple
+
+import pandas as pd
 
 CLASS_NAMES = ["cardboard", "glass", "metal", "paper", "plastic", "trash"]
-
-CLASS_TO_LABEL: Dict[str, int] = {name: idx for idx, name in enumerate(CLASS_NAMES)}
-LABEL_TO_CLASS: Dict[int, str] = {idx: name for name, idx in CLASS_TO_LABEL.items()}
-
-# allowed extensions (lowercase)
-ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
+CLASS_TO_LABEL = {name: i for i, name in enumerate(CLASS_NAMES)}
+LABEL_TO_CLASS = {i: name for name, i in CLASS_TO_LABEL.items()}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 
 
-def get_image_paths_and_labels(root_dir: str | Path) -> Tuple[List[Path], List[int]]:
-    """
-    Scan the dataset folder and return:
-      - list of image paths
-      - list of integer labels (same length as paths)
-    Expected structure:
-        root_dir/
-            cardboard/
-            glass/
-            metal/
-            paper/
-            plastic/
-            trash/
-    """
-    root = Path(root_dir)
-    if not root.exists():
-        raise FileNotFoundError(f"Dataset directory does not exist: {root}")
-
-    image_paths: List[Path] = []
-    labels: List[int] = []
+def get_image_paths_and_labels(
+    dataset_root: str | Path,
+) -> Tuple[List[Path], List[int], List[str]]:
+    root = Path(dataset_root)
+    paths, labels, class_names = [], [], []
 
     for class_name in CLASS_NAMES:
         class_dir = root / class_name
         if not class_dir.exists():
-            print(f"[WARN] Class folder missing: {class_dir}")
             continue
 
-        # iterate over files and filter by extension (case-insensitive)
-        for path in class_dir.iterdir():
-            if path.is_file() and path.suffix.lower() in ALLOWED_EXTS:
-                image_paths.append(path)
+        for p in class_dir.rglob("*"):
+            if p.suffix.lower() in IMAGE_EXTS:
+                paths.append(p)
                 labels.append(CLASS_TO_LABEL[class_name])
+                class_names.append(class_name)
 
-    return image_paths, labels
+    return paths, labels, class_names
 
 
-def describe_dataset(root_dir: str | Path) -> None:
-    """
-    Print how many images per class and total.
-    """
-    paths, labels = get_image_paths_and_labels(root_dir)
+def build_dataset_csv(
+    dataset_root: str | Path = "data/raw/dataset",
+    out_csv: str | Path = "data/interim/dataset.csv",
+) -> pd.DataFrame:
+    paths, labels, class_names = get_image_paths_and_labels(dataset_root)
+
+    df = pd.DataFrame(
+        {
+            "path": [str(p) for p in paths],
+            "label": labels,
+            "class_name": class_names,
+        }
+    )
+
+    out_csv = Path(out_csv)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_csv, index=False)
+
+    print(f"Saved dataset CSV: {out_csv} ({len(df)} images)")
+
     counts = Counter(labels)
+    for label, count in sorted(counts.items()):
+        print(f"{LABEL_TO_CLASS[label]:10s}: {count}")
 
-    print("Dataset summary:")
-    for label_idx, count in counts.items():
-        class_name = LABEL_TO_CLASS[label_idx]
-        print(f"  {class_name:10s}: {count}")
-
-    print(f"\nTotal images: {len(paths)}")
+    return df
 
 
-# Small self-test:
 if __name__ == "__main__":
-    # This assumes you run the script from the project root
-    DATASET_DIR = "data/raw/dataset"
-    describe_dataset(DATASET_DIR)
+    build_dataset_csv()
