@@ -1,14 +1,26 @@
-# Waste Classification ML Project
+# Material Stream Identification System
 
-This project classifies waste images into material types using classical ML
-(SVM and k-NN) on handcrafted image features, and deploys the best model in
-a real-time webcam application.
+This project builds a **real-time waste material classifier** that identifies:
+`cardboard, glass, metal, paper, plastic, trash`  
+from camera images, with an additional **"unknown" (ID = 6)** rejection class.
 
-## Project structure
+The system uses:
 
-- `data/` – raw and processed datasets
-- `src/` – source code (data, features, models, app)
-- `models/` – saved trained models
-- `notebooks/` – exploration & experiments
-- `scripts/` – command-line entry points (prepare data, train, evaluate, run app)
-- `reports/` – final report and figures
+- **Data augmentation** (flip, rotation, brightness, contrast, blur, zoom)
+- **CNN feature extraction** with a pretrained **ResNet-18**
+- Two classical ML models:
+  - **SVM (RBF kernel)** on CNN features
+  - **KNN (k=7, distance-weighted)** on CNN features
+- **Rejection mechanisms** to map low-confidence samples to `unknown`
+- A **live camera application** for real-time classification
+
+---
+
+## 1. Environment & Installation
+
+```bash
+python -m venv venv
+venv\Scripts\activate     # on Windows
+# or source venv/bin/activate on Linux/Mac
+
+pip install -r requirements.txt
